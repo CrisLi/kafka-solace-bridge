@@ -10,6 +10,10 @@ spring:
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
       max-poll-records: 500
+    listener:
+      # Required: offsets are acknowledged by the sender threads at the per-partition watermark (PartitionWindow).
+      # Any other mode commits ahead of Solace delivery and silently breaks at-least-once.
+      ack-mode: manual
 
 solace:
   jms:

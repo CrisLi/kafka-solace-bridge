@@ -6,7 +6,7 @@ import org.springframework.context.annotation.Configuration;
 
 /**
  * Tunes the {@link SolConnectionFactory} the Solace starter auto-configures. These are setters on the
- * factory, not {@code solace.jms.apiProperties} keys, so they are applied here rather than in application.yml.
+ * factory, not {@code solace.jms.apiProperties} keys, so they are applied here rather than in application.yaml.
  */
 @Configuration
 class SolaceConfig {

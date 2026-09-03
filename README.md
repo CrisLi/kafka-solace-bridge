@@ -138,7 +138,7 @@ poll → ConsumerRecord
 | `DestinationSender` | 一个 (partition, destination) 流的循环 |
 | `CircuitBreaker` | 每 destination 的状态机 |
 | `Transformer` | 纯函数，待替换 |
-| `KafkaConfig` / `SolaceConfig` / `AppProperties` | 容器工厂、Solace 工厂调参、配置校验 |
+| `KafkaConfig` / `SolaceConfig` / `AppProperties` | Kafka 错误处理器 bean、Solace 工厂调参、配置校验。listener 容器工厂用 Boot 自动配置的：`ack-mode` 来自 `application.yaml`，rebalance listener 是容器里唯一的 `ConsumerAwareRebalanceListener` bean（`BridgeListener`） |
 | `BridgeMetrics` | Micrometer 指标 |
 
 ## 5. 容量算术（配置改动时重新算）
@@ -171,6 +171,7 @@ poll → ConsumerRecord
 | 12 | 实现点 2：revoke 时关闭该 partition 的 Connection（初稿在 consumer 线程上同步 `close()` 并逐个 `join` sender 线程） | `connection.close()` 在独立 daemon 线程上执行；不再 `join` sender 线程 | rebalance 回调在 **Kafka consumer 线程**上运行。sender 卡在 `commit()` 时要靠 `close()` 解锁，而 `close()` 自己可能等待失联的 socket；顺序 `join(1000)` × 5 线程 × 7 partition 最坏 35 s，超过 lifecycle phase 超时和 `terminationGracePeriodSeconds`，consumer 会被踢出 group 或 pod 被 SIGKILL。第二轮 code review 发现。 |
 | 13 | 第 9 条的校验把 Spring 默认值 30 s 写死为 `≤ 25 s` | `BridgeListener` 构造时读取 `spring.lifecycle.timeout-per-shutdown-phase` 的实际值，要求 `shutdown-drain + 5 s ≤ 该值` | 写死只在默认值未被覆盖时成立；有人为加快发布把 phase 超时改小，校验就失效。第二轮 code review 发现。 |
 | 14 | Q15 状态机「同一轮内多个 partition 的失败只计一次」，初稿用时间比较去重（失败时刻早于 `notBefore` 即视为同一轮） | `awaitDecision()` 返回带轮次号的 `Permit`，`onFailure(round)` 只在轮次仍是当前轮时计数 | 时间比较假定失败的 `commit()` 在 `retry-wait` 内返回；socket 挂死时 commit 可能几分钟后才抛异常，会被算作新一轮，提前进入 OPEN。轮次号与时间无关。第二轮 code review 发现。 |
+| 15 | 初稿自定义 `ConcurrentKafkaListenerContainerFactory` bean，在代码里固定 `AckMode.MANUAL` 和 rebalance listener，使其不能被配置覆盖 | 改用 Boot 自动配置的容器工厂：`spring.kafka.listener.ack-mode: manual` 写在 `application.yaml`，rebalance listener 由 Boot 注入唯一的 `ConsumerAwareRebalanceListener` bean，`DefaultErrorHandler` 作为 `CommonErrorHandler` bean | 用户选择 Boot 原生接法（少一个类，团队更熟悉）。放弃的保护：环境变量 `SPRING_KAFKA_LISTENER_ACK_MODE` 可以改掉 ack 模式而无报错；再出现第二个 `ConsumerAwareRebalanceListener` bean 时 Boot 会静默地两个都不注入。两者都在 yaml 注释和本表标明。 |
 
 设计阶段内部就修订过的点（不算偏离，列出便于追溯）：连接布局 5×14 → 14×5（§3.6）；Q9 推荐从「无限重试」改为「N 次后丢弃」，原因是单 group 结构下无限重试会让 28 个 partition 全停。
 
@@ -202,7 +203,7 @@ poll → ConsumerRecord
 ```
 src/main/java/com/example/kafkasolacebridge/   BridgeListener · PartitionWindow · Pending · PartitionWorker · DestinationSender
                                    CircuitBreaker · Transformer · AppProperties · KafkaConfig · SolaceConfig · BridgeMetrics
-src/main/resources/application.yml 全部可调参数，注释里有算术
+src/main/resources/application.yaml 全部可调参数，注释里有算术
 src/test/java/com/example/kafkasolacebridge/   上表 4 个测试 + FakeSolace（模拟事务 JMS）
 k8s/deployment.yaml                ConfigMap + Deployment（2 replicas、2Gi、heap 60%、grace 30s）
 RUNBOOK.md                         broker 前置条件、retention 命令、指标告警、故障时间线、重放操作

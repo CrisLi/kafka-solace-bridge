@@ -19,8 +19,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
+import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.core.KafkaAdmin;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.test.context.EmbeddedKafka;
 
 /**
@@ -72,6 +74,15 @@ class BridgeIntegrationTest {
     @Autowired KafkaAdmin kafkaAdmin;
     @Autowired FakeSolace solace;
     @Autowired BridgeListener listener;
+    @Autowired KafkaListenerEndpointRegistry registry;
+
+    /** The container factory is Boot's; these two settings must survive whatever else gets configured. */
+    @Test
+    void bootAutoConfiguredContainerHasManualAckAndOurRebalanceListener() {
+        var props = registry.getListenerContainer(BridgeListener.LISTENER_ID).getContainerProperties();
+        assertThat(props.getAckMode()).isEqualTo(ContainerProperties.AckMode.MANUAL);
+        assertThat(props.getConsumerRebalanceListener()).isSameAs(listener);
+    }
 
     @Test
     void everyDestinationGetsEveryOffsetAndTheGroupOffsetFollowsTheWatermark() throws Exception {
