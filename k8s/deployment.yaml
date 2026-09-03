@@ -1,0 +1,72 @@
+# 2 replicas: 28 partitions / 2 pods = 14 partitions per pod. Keep replicas a divisor of 28 (1, 2, 4, 7, 14, 28)
+# and do NOT attach an HPA — every replica change is a consumer group rebalance that stops all partitions briefly.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-solace-bridge
+data:
+  KAFKA_BOOTSTRAP_SERVERS: "kafka-0.kafka:9092,kafka-1.kafka:9092"
+  KAFKA_TOPIC: "input"
+  KAFKA_GROUP_ID: "kafka-solace-bridge"
+  SOLACE_HOST: "tcps://solace.example.com:55443"
+  SOLACE_VPN: "default"
+  SOLACE_DESTINATIONS: "dest/1,dest/2,dest/3,dest/4,dest/5"
+---
+# kubectl create secret generic kafka-solace-bridge-credentials --from-literal=SOLACE_USERNAME=... --from-literal=SOLACE_PASSWORD=...
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-solace-bridge
+  labels:
+    app: kafka-solace-bridge
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: kafka-solace-bridge
+  template:
+    metadata:
+      labels:
+        app: kafka-solace-bridge
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /actuator/prometheus
+        prometheus.io/port: "8080"
+    spec:
+      # SIGTERM -> BridgeListener.stop() pauses polling and waits app.shutdown-drain for in-flight commits,
+      # then the Kafka container commits the watermark and revokes partitions. JMS connections are closed on
+      # separate threads, so revocation does not wait on Solace; 30 s covers drain + commit + unsubscribe.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: kafka-solace-bridge
+          image: REGISTRY/kafka-solace-bridge:VERSION
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # 60% of 2 Gi = 1.2 GB heap; the partition windows are sized for ~600 MB of that (see RUNBOOK §3)
+            - name: JAVA_TOOL_OPTIONS
+              value: "-XX:MaxRAMPercentage=60 -XX:+UseG1GC -XX:+ExitOnOutOfMemoryError"
+          envFrom:
+            - configMapRef:
+                name: kafka-solace-bridge
+            - secretRef:
+                name: kafka-solace-bridge-credentials
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              memory: 2Gi
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
