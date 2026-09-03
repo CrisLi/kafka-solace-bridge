@@ -198,7 +198,26 @@ poll → ConsumerRecord
 
 本机 JDK 25 时 surefire 需要 `-Dnet.bytebuddy.experimental=true`（已在 pom），JDK 21 不需要。
 
-## 9. 文件导航
+## 9. 本地运行与观察
+
+```bash
+mvn test                                                   # 24 个测试，含嵌入式 Kafka 的端到端测试
+mvn -q -DskipTests package
+java -jar target/kafka-solace-bridge-0.1.0-SNAPSHOT.jar    # 没有 Kafka/Solace 也能启动，用于看 endpoint
+
+curl -s localhost:8080/actuator/prometheus | grep -E '^bridge_'   # 指标
+curl -s localhost:8080/actuator/health                            # 含 jms 指示器：Solace 连不上就是 DOWN
+```
+
+| Endpoint | 用途 |
+|---|---|
+| `/actuator/prometheus` | 全部指标；`bridge_breaker_state{destination}`、`bridge_sent_total{destination}`、`bridge_rolledback_total`、`bridge_discarded_total`、`bridge_window_size{partition}`、`bridge_transform_failed_total`、`kafka_consumer_fetch_manager_records_lag_max` |
+| `/actuator/health` | 聚合健康，包含 Solace 连通性（`jms`） |
+| `/actuator/health/liveness` `/readiness` | k8s 探针；不含 `jms`，Solace 故障不会导致 pod 重启 |
+
+刚启动、未分到 partition 时只有 `bridge_breaker_state` 和 `bridge_transform_failed_total`，其余在 `PartitionWorker` 创建后出现。指标含义、告警规则、`watch`/`port-forward` 命令见 [RUNBOOK §4](RUNBOOK.md#4-指标与告警)。
+
+## 10. 文件导航
 
 ```
 src/main/java/com/example/kafkasolacebridge/   BridgeListener · PartitionWindow · Pending · PartitionWorker · DestinationSender
