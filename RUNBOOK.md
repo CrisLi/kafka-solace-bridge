@@ -82,6 +82,43 @@ kafka-configs.sh --bootstrap-server <host:9092> --describe --all \
 
 ## 4. 指标与告警
 
+### 4.1 Endpoint 与本地观察
+
+| Endpoint（默认 `:8080`） | 内容 |
+|---|---|
+| `/actuator/prometheus` | 全部指标，Prometheus 文本格式。Micrometer 名字到 Prometheus 名字的映射：`bridge.sent` → `bridge_sent_total`（counter 加 `_total`），gauge 名字不变 |
+| `/actuator/health` | 聚合健康。**包含 Boot 自动配置的 `jms` 指示器**：每次调用对 Solace 建一个连接再关掉（Solace 不可达时最多阻塞 `connectTimeout` 10 s），`DOWN` = Solace 连不上 |
+| `/actuator/health/liveness`、`/actuator/health/readiness` | k8s 探针用。只含应用自身状态，**不含** `jms`，所以 Solace 不可达不会触发 pod 重启 —— 这是有意的：重启解决不了 broker 故障，反而丢掉窗口 |
+| `/actuator/info` | 构建信息 |
+
+本地看一眼（不需要 Kafka / Solace 也能启动，consumer 和 Solace 连接会在日志里重试）：
+
+```bash
+mvn -q -DskipTests package
+java -jar target/kafka-solace-bridge-0.1.0-SNAPSHOT.jar          # 或加 --server.port=18080
+
+curl -s localhost:8080/actuator/prometheus | grep -E '^bridge_'
+
+# 每秒刷新
+watch -n1 'curl -s localhost:8080/actuator/prometheus | grep -E "^(bridge_|kafka_consumer_fetch_manager_records_lag_max)"'
+
+# k8s 里
+kubectl port-forward deploy/kafka-solace-bridge 8080:8080
+```
+
+刚启动、还没分到 partition 时只有这些（实测输出）：
+
+```
+bridge_breaker_state{destination="dest/1"} 0.0
+...
+bridge_breaker_state{destination="dest/5"} 0.0
+bridge_transform_failed_total 0.0
+```
+
+`bridge_sent_total` / `bridge_rolledback_total` / `bridge_discarded_total` 和 `bridge_window_size{partition}` 在该 pod 分到 partition、`PartitionWorker` 创建后才出现；`kafka_consumer_fetch_manager_records_lag_max` 由 spring-kafka 的 Micrometer 集成注册，consumer 启动即有。
+
+### 4.2 指标与告警规则
+
 Prometheus 抓 `/actuator/prometheus`。
 
 | 指标 | 含义 | 建议告警 |
@@ -133,7 +170,7 @@ partition 被收回 → 提交当前水位，丢弃窗口，关闭该 partition 
 ## 6. 运维操作
 
 ```bash
-# 本地运行
+# 本地运行（指标与 health 的观察方式见 §4.1）
 KAFKA_BOOTSTRAP_SERVERS=... SOLACE_HOST=... SOLACE_USERNAME=... SOLACE_PASSWORD=... mvn spring-boot:run
 
 # 构建镜像（不需要 Dockerfile）

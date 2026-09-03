@@ -76,6 +76,13 @@ class BridgeListener implements ConsumerAwareRebalanceListener, SmartLifecycle {
         } catch (RuntimeException e) {
             metrics.transformFailed().increment();
             log.error("transform failed for partition {} offset {}; record skipped", rec.partition(), rec.offset(), e);
+            // The record will never be sent, but its offset still has to pass through the watermark in order.
+            // - ack.acknowledge() here would commit this offset while earlier records of the partition are still
+            //   unconfirmed in the window; Kafka commits are cumulative, so a restart would skip them (data loss).
+            // - Not acknowledging at all would leave the watermark stuck at this record forever.
+            // addSkipped() puts the record into the window's commit-order deque already marked as confirmed by
+            // every destination and never hands it to the sender queues, so the watermark steps over it exactly
+            // when its turn comes and the offset is committed in sequence.
             window.addSkipped(new Pending(rec.partition(), rec.offset(), rec.timestamp(), rec.key(), null, ack));
             return;
         }
